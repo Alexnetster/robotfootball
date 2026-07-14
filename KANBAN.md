@@ -44,7 +44,6 @@
 - (Plan 4a 후속) **`Controller::as_any_mut`(Any 다운캐스트) → Plan 4b에서 슬롯 상태 늘면 `SlotController` enum으로 리팩터** / mpsc 백프레셔 없음(하드닝 시) / **브라우저 시각검증 미완**(회전방향 ←=CCW·HP바·스턴/다운 렌더·상대와 충돌 시 라이브 전투 — 사용자가 `cargo run`+`npm run dev`로 확인)
 
 ## Todo
-- [ ] KB-60 방어형 범위 확대 + 공 인지 빠르게 — DefenderAi가 공을 늦게 인지하고 방어 범위가 좁음. `DEFENDER_GUARD_DIST`(2.5m) 상향 + 자기 진영 접근을 이르게 감지해 나가 막기 (사용자 요청, 내일 진행)
 - [ ] 밸런스 결정 — striker가 guard와 몸싸움서 항상 밀림(의도된 비대칭). 유지/guard약화/대칭 중 택 (미정)
 - [ ] 다리로 슛 연출(앞다리 차는 애니, 클라 렌더)
 
@@ -52,6 +51,9 @@
 _(비어 있음)_
 
 ## Done
+**방어형 범위 확대 + 조기 인지 ✅** (branch `feat/interactivity`)
+- [x] KB-60 방어형 범위 확대 + 공 인지 빠르게 — `guard_target`에 속도 예측(`pred = ball.pos + ball.vel * LOOKAHEAD`)으로 굴러오는 공을 조기 인지 + 예측 위치의 진영에 따라 가드 거리 2단화(`GUARD_HOME`=2.5 상대 진영 대기 / `GUARD_ENGAGE`=4.0 자기 진영 요격, `DEFENDER_GUARD_DIST`를 `GUARD_HOME`으로 개명). 설계: [defender-ai-positioning-design](docs/superpowers/specs/2026-07-14-defender-ai-positioning-design.md). (테스트: 상대 진영 GUARD_HOME 이내 유지·자기 진영 GUARD_ENGAGE로 확장·조기인지로 진영전환 전에도 확장, cargo test 102/102)
+
 **UI 비주얼 디자인 ✅** (branch `feat/interactivity`)
 - [x] KB-51 미드나잇 프리시전 콘솔(크롬) + Neon Telemetry Arena(게임화면) — 독립 리뷰어 2패널로 방향 결정([ADR-014](docs/07-결정기록-ADR.md)), 시안 승인 후 클라 적용(index.html 콘솔 레이아웃·style.css·render.ts 아트·hud.ts/devpanel.ts HUD 배선). netsim/RTT를 일급 LINK MONITOR로 격상, 스코어/시계 크롬 HUD 이전. 기능 불변(보간·ping/RTT·netsim·참가·입력), 클라 빌드 clean, 배선 id 12개 정합 확인.
 

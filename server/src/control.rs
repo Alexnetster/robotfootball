@@ -136,11 +136,13 @@ impl Controller for ChaseBallAi {
 }
 
 /// 자기 골을 지키는 수비형 AI(KB-57). 협동 역할 분담: 공격형은 `ChaseBallAi`(이름
-/// 그대로 유지, 회귀 최소화)를 그대로 쓴다. 공을 직접 쫓지 않고 **자기 골과 공을 잇는
-/// 선 위, 자기 골에서 `DEFENDER_GUARD_DIST` 이내 지점**을 목표로 움직인다:
-/// 공이 자기 진영 가까이 오면 그 위치까지 나가서 막고, 멀리 있으면 골 앞에서
-/// 대기한다. 공격형(ChaseBallAi)과 목표가 근본적으로 달라 공에 뭉치지 않는다.
-/// 스턱 탈출·슛(자책골 회피) 판정은 공격형과 동일 로직을 공유한다.
+/// 그대로 유지, 회귀 최소화)를 그대로 쓴다. 공을 직접 쫓지 않고 **자기 골과 공의
+/// 예측 위치를 잇는 선 위, 자기 골에서 유효 가드 거리 이내 지점**을 목표로 움직인다:
+/// 공이 자기 진영 가까이 오면(혹은 그쪽으로 굴러오면) 그 위치까지 나가서 막고,
+/// 멀리 있으면 골 앞에서 대기한다. 공격형(ChaseBallAi)과 목표가 근본적으로 달라
+/// 공에 뭉치지 않는다. 스턱 탈출·슛(자책골 회피) 판정은 공격형과 동일 로직을 공유한다.
+/// 방어 범위 확대 + 조기 인지 설계:
+/// [defender-ai-positioning-design](../../docs/superpowers/specs/2026-07-14-defender-ai-positioning-design.md).
 #[derive(Default)]
 pub struct DefenderAi {
     /// 정지(속도<STUCK_SPEED) 지속 프레임 수.
@@ -149,9 +151,12 @@ pub struct DefenderAi {
     escape: u32,
 }
 
-/// 수비형이 자기 골에서 벗어나는 최대 거리(m). 공이 이보다 가까우면 공 쪽으로
-/// 나가 막고, 멀면 이 거리에서 골 앞을 지킨다(튜닝 대상).
-const DEFENDER_GUARD_DIST: f32 = 2.5;
+/// 공(예측 위치)이 상대 진영일 때의 가드 거리(m, 골 앞 대기, 보수적).
+const GUARD_HOME: f32 = 2.5;
+/// 공(예측 위치)이 자기 진영일 때의 가드 거리(m, 더 멀리 나가 요격, 공격적).
+const GUARD_ENGAGE: f32 = 4.0;
+/// 공 속도 예측 시간(s). 공의 미래 위치 = `pos + vel * LOOKAHEAD`로 조기 인지.
+const LOOKAHEAD: f32 = 0.35;
 /// 도착 판정 반경(m, KB-59). 목표에 이 안으로 들어오면 전진을 멈추고 공을 조준하며
 /// 대기 — 도착 지점에서 목표방향이 ≈0이 돼 각도가 노이즈가 되는 제자리 스핀을 방지.
 const DEFENDER_ARRIVE: f32 = 0.45;
@@ -159,18 +164,26 @@ const DEFENDER_ARRIVE: f32 = 0.45;
 const TURN_DEADZONE: f32 = 0.1;
 
 impl DefenderAi {
-    /// 자기 골과 공을 잇는 선 위, 자기 골에서 `DEFENDER_GUARD_DIST` 이내 지점을
-    /// 목표로 계산한다(순수 함수, 테스트 용이).
+    /// 자기 골과 공의 예측 위치를 잇는 선 위, 자기 골에서 유효 가드 거리 이내
+    /// 지점을 목표로 계산한다(순수 함수, 테스트 용이). 예측 위치가 자기 진영이면
+    /// `GUARD_ENGAGE`(더 멀리 요격), 상대 진영이면 `GUARD_HOME`(골 앞 대기)을 쓴다.
     fn guard_target(team: Team, ball: &BallState) -> (f32, f32) {
         let gx = own_goal_x(team);
         let gy = 0.0;
-        let dx = ball.pos.x - gx;
-        let dy = ball.pos.y - gy;
+        let pred_x = ball.pos.x + ball.vel.x * LOOKAHEAD;
+        let pred_y = ball.pos.y + ball.vel.y * LOOKAHEAD;
+        let dx = pred_x - gx;
+        let dy = pred_y - gy;
         let dist = (dx * dx + dy * dy).sqrt();
         if dist <= 1e-6 {
             return (gx, gy);
         }
-        let clamped = dist.min(DEFENDER_GUARD_DIST);
+        let own_half = match team {
+            Team::Blue => pred_x <= 0.0,
+            Team::Red => pred_x >= 0.0,
+        };
+        let guard = if own_half { GUARD_ENGAGE } else { GUARD_HOME };
+        let clamped = dist.min(guard);
         let k = clamped / dist;
         (gx + dx * k, gy + dy * k)
     }
@@ -376,7 +389,7 @@ mod tests {
         let own_goal_x = -FIELD_W / 2.0;
         let dist = ((tx - own_goal_x).powi(2) + ty.powi(2)).sqrt();
         assert!(
-            dist <= DEFENDER_GUARD_DIST + 1e-3,
+            dist <= GUARD_HOME + 1e-3,
             "공이 멀면 목표는 자기 골 근처에 머물러야 함 (target=({tx},{ty}), dist={dist})"
         );
     }
@@ -437,6 +450,60 @@ mod tests {
         let (me, ball) = view_at(Team::Blue, Vec2 { x: 0.0, y: 0.0 }, std::f32::consts::PI, Vec2 { x: -0.6, y: 0.0 });
         let mut ai = DefenderAi::default();
         assert!(!ai.decide(&GameView { me: &me, ball: &ball }).kick, "자기 골 방향이면 무슛");
+    }
+
+    // -- DefenderAi 방어범위 확대 + 조기인지(2026-07-14 설계) -----------------------
+
+    /// 공(예측 위치)이 상대 진영이면 목표는 GUARD_HOME 이내로 유지(범위 확대 전과 동일).
+    #[test]
+    fn defender_guard_home_when_predicted_in_enemy_half() {
+        let ball = BallState {
+            pos: Vec2 { x: 5.0, y: 1.0 }, // 블루 기준 상대 진영, 정지
+            vel: Vec2 { x: 0.0, y: 0.0 },
+        };
+        let (tx, ty) = DefenderAi::guard_target(Team::Blue, &ball);
+        let own_goal_x = -FIELD_W / 2.0;
+        let dist = ((tx - own_goal_x).powi(2) + ty.powi(2)).sqrt();
+        assert!(dist <= GUARD_HOME + 1e-3, "상대 진영이면 GUARD_HOME 이내여야 함 (dist={dist})");
+    }
+
+    /// 공(예측 위치)이 자기 진영 멀리면 목표가 GUARD_HOME을 넘어 GUARD_ENGAGE까지 확장돼야 한다.
+    #[test]
+    fn defender_guard_extends_to_engage_when_predicted_in_own_half() {
+        let ball = BallState {
+            pos: Vec2 { x: -1.0, y: 0.0 }, // 블루 기준 자기 진영, 골에서 5.0 거리, 정지
+            vel: Vec2 { x: 0.0, y: 0.0 },
+        };
+        let (tx, ty) = DefenderAi::guard_target(Team::Blue, &ball);
+        let own_goal_x = -FIELD_W / 2.0;
+        let dist = ((tx - own_goal_x).powi(2) + ty.powi(2)).sqrt();
+        assert!(
+            dist > GUARD_HOME + 1e-3,
+            "자기 진영이면 GUARD_HOME을 넘어 확장돼야 함 (dist={dist})"
+        );
+        assert!(
+            dist <= GUARD_ENGAGE + 1e-3,
+            "확장 상한은 GUARD_ENGAGE (dist={dist})"
+        );
+    }
+
+    /// 속도 예측(조기 인지): 정지한 공과 달리, 자기 진영으로 굴러오는 공은 아직 상대 진영에
+    /// 있어도 예측 위치가 자기 진영으로 넘어가 목표가 더 멀리(GUARD_ENGAGE 쪽으로) 확장돼야 한다.
+    #[test]
+    fn defender_lookahead_extends_target_for_incoming_ball_before_it_crosses() {
+        let pos = Vec2 { x: 0.3, y: 0.0 }; // 아직 상대 진영(x>0)
+        let stationary = BallState { pos, vel: Vec2 { x: 0.0, y: 0.0 } };
+        let incoming = BallState { pos, vel: Vec2 { x: -6.0, y: 0.0 } }; // 자기 진영으로 굴러옴
+        let own_goal_x = -FIELD_W / 2.0;
+
+        let (sx, sy) = DefenderAi::guard_target(Team::Blue, &stationary);
+        let (ix, iy) = DefenderAi::guard_target(Team::Blue, &incoming);
+        let sdist = ((sx - own_goal_x).powi(2) + sy.powi(2)).sqrt();
+        let idist = ((ix - own_goal_x).powi(2) + iy.powi(2)).sqrt();
+        assert!(
+            idist > sdist + 1e-3,
+            "굴러오는 공은 조기 인지로 목표가 더 멀리 확장돼야 함 (stationary={sdist}, incoming={idist})"
+        );
     }
 
     /// 수비형도 벽에 박혀 정지 지속 시 후진 탈출 기동으로 전환해야 한다(공격형과 공유 로직).
