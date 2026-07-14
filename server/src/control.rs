@@ -167,6 +167,13 @@ impl DefenderAi {
     /// 자기 골과 공의 예측 위치를 잇는 선 위, 자기 골에서 유효 가드 거리 이내
     /// 지점을 목표로 계산한다(순수 함수, 테스트 용이). 예측 위치가 자기 진영이면
     /// `GUARD_ENGAGE`(더 멀리 요격), 상대 진영이면 `GUARD_HOME`(골 앞 대기)을 쓴다.
+    ///
+    /// KB-61: 공 속도의 접선(골라인과 나란한) 성분이 크면 `LOOKAHEAD` 외삽 지점이
+    /// 골에서 유클리드 거리로 공의 **실제** 현재 위치보다 더 멀어질 수 있다. 그대로
+    /// 두면 수비형이 공보다 골에서 먼 쪽(미드필드 쪽)에 머물며 좁혀오는 공을 자기
+    /// 골 방향으로 계속 떠미는 자살골 패턴이 생긴다. 방향은 예측 지점을 그대로 쓰되,
+    /// 목표 거리는 공의 실제 위치보다 멀어지지 않게 캡을 걸어 항상 공의 골 쪽에
+    /// 자리잡게 한다.
     fn guard_target(team: Team, ball: &BallState) -> (f32, f32) {
         let gx = own_goal_x(team);
         let gy = 0.0;
@@ -183,7 +190,10 @@ impl DefenderAi {
             Team::Red => pred_x >= 0.0,
         };
         let guard = if own_half { GUARD_ENGAGE } else { GUARD_HOME };
-        let clamped = dist.min(guard);
+        let actual_dx = ball.pos.x - gx;
+        let actual_dy = ball.pos.y - gy;
+        let actual_dist = (actual_dx * actual_dx + actual_dy * actual_dy).sqrt();
+        let clamped = dist.min(guard).min(actual_dist.max(1e-6));
         let k = clamped / dist;
         (gx + dx * k, gy + dy * k)
     }
@@ -503,6 +513,29 @@ mod tests {
         assert!(
             idist > sdist + 1e-3,
             "굴러오는 공은 조기 인지로 목표가 더 멀리 확장돼야 함 (stationary={sdist}, incoming={idist})"
+        );
+    }
+
+    /// 자살골 회귀(KB-61 조사): 공이 골 근처에서 주로 **접선 방향**(골라인과 나란히,
+    /// 예: y로 빠르게 흐르며 x로는 살짝만 접근)으로 구를 때, LOOKAHEAD를 그대로
+    /// 외삽하면 예측 지점이 골에서 유클리드 거리로 공의 **현재** 위치보다 더 멀어질 수
+    /// 있다(접선 성분이 커서). 이 경우 목표가 공의 실제 위치보다 골에서 더 멀어지면
+    /// 수비형이 골 쪽에 자리잡지 못하고 공 뒤(미드필드 쪽)에서 쫓아가며 결과적으로
+    /// 공을 자기 골 방향으로 계속 떠밀게 된다(재현: 4대 30초+ 헤드리스 시뮬레이션에서
+    /// 관측). 목표는 공의 실제 위치보다 골에서 더 멀어져선 안 된다.
+    #[test]
+    fn defender_guard_target_never_farther_from_goal_than_balls_actual_position() {
+        let ball = BallState {
+            pos: Vec2 { x: -5.66, y: -0.03 }, // 블루 자기 골(-6,0) 코앞
+            vel: Vec2 { x: -0.45, y: -2.7 },  // 접선(y) 성분이 압도적으로 큼
+        };
+        let (tx, ty) = DefenderAi::guard_target(Team::Blue, &ball);
+        let own_goal_x = -FIELD_W / 2.0;
+        let target_dist = ((tx - own_goal_x).powi(2) + ty.powi(2)).sqrt();
+        let ball_dist = ((ball.pos.x - own_goal_x).powi(2) + ball.pos.y.powi(2)).sqrt();
+        assert!(
+            target_dist <= ball_dist + 1e-3,
+            "목표가 공의 실제 위치보다 골에서 더 멀면 안 됨 (target_dist={target_dist}, ball_dist={ball_dist})"
         );
     }
 
