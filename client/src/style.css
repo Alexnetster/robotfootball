@@ -1,0 +1,195 @@
+/* ── Midnight Precision Console (ADR-014 웹 크롬) ─────────────────────── */
+:root {
+  --bg: #0B0E14;
+  --panel: #151A24;
+  --panel-2: #1b2230;
+  --border: #242c3a;
+  --text: #E6E9EF;
+  --dim: #8390a3;
+  --mute: #55606f;
+  --blue: #3AA0FF;
+  --red: #FF5A6A;
+  --amber: #FFB020;
+  --green: #3DDC97;
+  --pitch: #0d1220;
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; background: var(--bg); }
+body { font-family: var(--sans); }
+
+.wrap {
+  min-height: 100%;
+  background: radial-gradient(1200px 600px at 50% -10%, #10151f 0%, var(--bg) 60%);
+  color: var(--text);
+  font-family: var(--sans);
+  padding: 28px 20px 40px;
+  display: flex; justify-content: center;
+}
+.console {
+  width: 100%; max-width: 960px;
+  display: flex; flex-direction: column; gap: 14px;
+}
+
+/* ── top bar ── */
+.topbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.brand { display: flex; align-items: baseline; gap: 10px; }
+.brand h1 { margin: 0; font-size: 15px; font-weight: 650; letter-spacing: .14em; text-transform: uppercase; }
+.brand .dot {
+  width: 7px; height: 7px; border-radius: 50%; background: var(--green);
+  box-shadow: 0 0 8px var(--green); animation: pulse 1.8s infinite; align-self: center;
+}
+.eyebrow { font: 500 10.5px/1 var(--mono); letter-spacing: .22em; text-transform: uppercase; color: var(--dim); }
+.clock { font: 600 15px/1 var(--mono); font-variant-numeric: tabular-nums; color: var(--text); letter-spacing: .04em; }
+.clock .lbl { color: var(--mute); font-size: 10px; letter-spacing: .2em; margin-right: 8px; }
+
+/* ── scoreboard ── */
+.scoreboard {
+  display: grid; grid-template-columns: 1fr auto 1fr; align-items: center;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+  padding: 12px 18px;
+}
+.team { display: flex; align-items: center; gap: 10px; }
+.team.red { justify-content: flex-end; }
+.team .chip { width: 12px; height: 12px; border-radius: 3px; }
+.team.blue .chip { background: var(--blue); box-shadow: 0 0 10px rgba(58,160,255,.6); }
+.team.red .chip { background: var(--red); box-shadow: 0 0 10px rgba(255,90,106,.6); }
+.team .name { font: 600 12px/1 var(--sans); letter-spacing: .18em; text-transform: uppercase; color: var(--dim); }
+.team.blue .name { color: #bcd8ff; }
+.team.red .name { color: #ffc4cb; }
+
+/* 참가 상태 배지(KB-55): AI(dim) / 사람(중립) / YOU(액센트, 내 슬롯). */
+.ctrl-badge {
+  font: 650 9px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase;
+  padding: 3px 7px; border-radius: 999px; border: 1px solid var(--border);
+  color: var(--mute); background: var(--panel-2);
+}
+.ctrl-badge.is-human { color: var(--text); border-color: rgba(230,233,239,.25); }
+.ctrl-badge.is-you {
+  color: #08131f; background: var(--amber); border-color: var(--amber);
+  box-shadow: 0 0 10px rgba(255,176,32,.5);
+}
+.score { display: flex; align-items: center; gap: 14px; font: 700 34px/1 var(--mono); font-variant-numeric: tabular-nums; }
+.score .s.b { color: var(--blue); }
+.score .s.r { color: var(--red); }
+.score .sep { color: var(--mute); font-size: 22px; }
+
+/* ── pitch stage ── */
+.stage {
+  position: relative; border: 1px solid var(--border); border-radius: 14px; overflow: hidden;
+  background: var(--pitch);
+  box-shadow: inset 0 0 60px rgba(0,0,0,.5);
+  line-height: 0;
+}
+.stage canvas { display: block; width: 100%; height: auto; max-width: 100%; }
+.scan {
+  position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(180deg, transparent 0%, rgba(58,160,255,.05) 50%, transparent 100%);
+  height: 40%; animation: sweep 6s linear infinite;
+}
+.stagetag {
+  position: absolute; left: 12px; bottom: 10px; font: 500 10px/1 var(--mono);
+  letter-spacing: .18em; color: var(--mute); text-transform: uppercase;
+}
+
+/* ── lower grid: controls + telemetry ── */
+.lower { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
+.card h2 {
+  margin: 0 0 12px; font: 600 10px/1 var(--mono); letter-spacing: .2em; text-transform: uppercase;
+  color: var(--dim); display: flex; align-items: center; gap: 8px;
+}
+.card h2 .link-dot {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--green);
+  box-shadow: 0 0 7px var(--green); animation: pulse 1.8s infinite;
+}
+
+/* controls */
+.keys { display: flex; flex-direction: column; gap: 10px; }
+.keyrow { display: flex; align-items: center; gap: 10px; }
+.keycap {
+  font: 600 12px/1 var(--mono); min-width: 26px; height: 26px; padding: 0 7px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--panel-2); border: 1px solid var(--border); border-bottom-width: 2px;
+  border-radius: 6px; color: var(--text);
+}
+.keyrow .desc { font: 400 12.5px/1.3 var(--sans); color: var(--dim); }
+.keyrow .grp { display: flex; gap: 4px; }
+
+/* telemetry */
+.telem { display: flex; flex-direction: column; gap: 12px; }
+.rttline { display: flex; align-items: baseline; justify-content: space-between; }
+.rttline .val { font: 700 24px/1 var(--mono); font-variant-numeric: tabular-nums; color: var(--green); transition: color .2s; }
+.rttline .val.good { color: var(--green); }
+.rttline .val.warn { color: var(--amber); }
+.rttline .val.bad { color: var(--red); }
+.rttline .val.unknown { color: var(--mute); }
+.rttline .unit { font: 500 11px/1 var(--mono); color: var(--mute); margin-left: 3px; }
+.rttline .cap { font: 500 10px/1 var(--mono); letter-spacing: .18em; text-transform: uppercase; color: var(--mute); }
+
+.toggle-row { display: flex; align-items: center; justify-content: space-between; }
+.toggle-row .cap { font: 500 10px/1 var(--mono); letter-spacing: .18em; text-transform: uppercase; color: var(--mute); }
+.toggle-row label { display: flex; align-items: center; gap: 6px; font: 500 11px/1 var(--mono); color: var(--dim); cursor: pointer; }
+
+.sliders { display: flex; flex-direction: column; gap: 9px; }
+.slider { display: grid; grid-template-columns: 46px 1fr 46px; align-items: center; gap: 10px; }
+.slider .lbl { font: 500 10px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--dim); }
+.slider .num { font: 600 11px/1 var(--mono); font-variant-numeric: tabular-nums; color: var(--text); text-align: right; }
+
+/* custom range slider — replaces mockup's static .track/.fill with a live control */
+input[type="range"].range-input {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  outline: none;
+  cursor: pointer;
+}
+input[type="range"].range-input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 12px; height: 12px; border-radius: 50%;
+  background: var(--blue); box-shadow: 0 0 8px rgba(58,160,255,.6);
+  border: none; cursor: pointer;
+}
+input[type="range"].range-input::-moz-range-thumb {
+  width: 12px; height: 12px; border-radius: 50%;
+  background: var(--blue); box-shadow: 0 0 8px rgba(58,160,255,.6);
+  border: none; cursor: pointer;
+}
+input[type="range"].range-input::-moz-range-track {
+  height: 4px; border-radius: 3px; background: transparent;
+}
+
+/* join buttons */
+.join { display: flex; gap: 12px; }
+.btn {
+  flex: 1; padding: 13px; border-radius: 10px; font: 650 12px/1 var(--sans); letter-spacing: .16em;
+  text-transform: uppercase; cursor: pointer;
+  background: var(--panel); color: var(--text); border: 1px solid var(--border); transition: all .15s;
+  display: flex; align-items: center; justify-content: center; gap: 9px;
+}
+.btn .chip { width: 10px; height: 10px; border-radius: 3px; }
+.btn.blue { border-color: rgba(58,160,255,.45); }
+.btn.blue .chip { background: var(--blue); box-shadow: 0 0 10px var(--blue); }
+.btn.red { border-color: rgba(255,90,106,.45); }
+.btn.red .chip { background: var(--red); box-shadow: 0 0 10px var(--red); }
+.btn:hover { background: var(--panel-2); }
+.btn.blue:hover { box-shadow: 0 0 0 1px rgba(58,160,255,.5), 0 0 22px rgba(58,160,255,.18); }
+.btn.red:hover { box-shadow: 0 0 0 1px rgba(255,90,106,.5), 0 0 22px rgba(255,90,106,.18); }
+/* 내가 참가 중인 팀(KB-55): 토글 버튼이 "나가기"로 바뀔 때 강조. */
+.btn.mine { border-color: var(--amber); box-shadow: 0 0 0 1px rgba(255,176,32,.5), 0 0 18px rgba(255,176,32,.2); }
+
+.note { font: 400 11.5px/1.5 var(--sans); color: var(--mute); text-align: center; margin: 0; }
+.note b { color: var(--dim); font-weight: 600; }
+
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+@keyframes sweep { 0% { transform: translateY(-100%); } 100% { transform: translateY(350%); } }
+@media (prefers-reduced-motion: reduce) { .scan, .dot, .link-dot { animation: none; } .scan { display: none; } }
+@media (max-width: 620px) {
+  .lower { grid-template-columns: 1fr; }
+  .score { font-size: 28px; }
+}

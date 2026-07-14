@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Robot Soccer</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="console">
+        <!-- top bar -->
+        <div class="topbar">
+          <div class="brand">
+            <span class="dot"></span>
+            <h1>Robot Soccer</h1>
+            <span class="eyebrow">Real-time &middot; Server-authoritative</span>
+          </div>
+          <div class="clock"><span class="lbl">MATCH</span><span id="clock-time">00:00</span></div>
+        </div>
+
+        <!-- scoreboard -->
+        <div class="scoreboard">
+          <div class="team blue"><span class="chip"></span><span class="name">Blue</span><span class="ctrl-badge" id="ctrl-blue">AI</span></div>
+          <div class="score">
+            <span class="s b" id="score-blue">0</span><span class="sep">&mdash;</span><span class="s r" id="score-red">0</span>
+          </div>
+          <div class="team red"><span class="ctrl-badge" id="ctrl-red">AI</span><span class="name">Red</span><span class="chip"></span></div>
+        </div>
+
+        <!-- pitch stage -->
+        <div class="stage">
+          <canvas id="c" width="900" height="600"></canvas>
+          <div class="scan"></div>
+          <div class="stagetag">Arena &middot; top-down &middot; 12 &times; 8 m</div>
+        </div>
+
+        <!-- controls + telemetry -->
+        <div class="lower">
+          <div class="card">
+            <h2>Controls</h2>
+            <div class="keys">
+              <div class="keyrow"><span class="grp"><span class="keycap">&uarr;</span><span class="keycap">&darr;</span></span><span class="desc">전진 / 후진</span></div>
+              <div class="keyrow"><span class="grp"><span class="keycap">&larr;</span><span class="keycap">&rarr;</span></span><span class="desc">회전 (조준)</span></div>
+              <div class="keyrow"><span class="keycap">Shift</span><span class="desc">스프린트 (스태미나 소모)</span></div>
+              <div class="keyrow"><span class="keycap">Space</span><span class="desc">차기</span></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2><span class="link-dot"></span>Link Monitor</h2>
+            <div class="telem">
+              <div class="rttline">
+                <span class="cap">RTT</span>
+                <span><span class="val unknown" id="rtt-value">--</span><span class="unit">ms</span></span>
+              </div>
+              <div class="sliders">
+                <div class="slider">
+                  <span class="lbl">Delay</span>
+                  <input class="range-input" id="netsim-delay" type="range" min="0" max="300" step="10" value="0" />
+                  <span class="num" id="netsim-delay-num">0 ms</span>
+                </div>
+                <div class="slider">
+                  <span class="lbl">Jitter</span>
+                  <input class="range-input" id="netsim-jitter" type="range" min="0" max="150" step="10" value="0" />
+                  <span class="num" id="netsim-jitter-num">0 ms</span>
+                </div>
+                <div class="slider">
+                  <span class="lbl">Drop</span>
+                  <input class="range-input" id="netsim-drop" type="range" min="0" max="100" step="1" value="0" />
+                  <span class="num" id="netsim-drop-num">0 %</span>
+                </div>
+              </div>
+              <div class="toggle-row">
+                <span class="cap">Interp</span>
+                <label><input id="interp-toggle" type="checkbox" checked /> smoothing</label>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- join -->
+        <div class="join">
+          <button class="btn blue" id="join-blue"><span class="chip"></span><span id="join-blue-label">Blue로 참가</span></button>
+          <button class="btn red" id="join-red"><span class="chip"></span><span id="join-red-label">Red로 참가</span></button>
+        </div>
+
+        <p class="note"><b>미드나잇 프리시전 콘솔</b> &middot; 서버 스냅샷 실시간 렌더</p>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
