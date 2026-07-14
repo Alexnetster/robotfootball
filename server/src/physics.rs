@@ -112,6 +112,9 @@ pub struct PhysicsWorld {
     stamina: Vec<StaminaState>,
     /// 차기(킥, KB-48): 직전 스텝의 `kick` 입력값(상승엣지 판정용).
     prev_kick: Vec<bool>,
+    /// 공을 마지막으로 건드린 로봇(rapier 충돌 이벤트 기준, KB-63). 자책골 디플렉션
+    /// 완화(`correct_own_goal_deflections`)의 책임 판정에 쓰인다.
+    last_ball_toucher: Option<usize>,
     /// 차기 쿨다운 잔여초(로봇별). >0인 동안 재발사 불가·스냅샷 "shoot_lock".
     kick_cd: Vec<f32>,
     pub score: (u32, u32),
@@ -346,6 +349,7 @@ impl PhysicsWorld {
             part_map,
             combat,
             stamina,
+            last_ball_toucher: None,
             prev_kick: vec![false; n],
             kick_cd: vec![0.0; n],
             score: (0, 0),
@@ -477,6 +481,9 @@ impl PhysicsWorld {
             &ev,
         );
         self.apply_collision_damage(&cr);
+        // 자책골 디플렉션 완화(KB-63): 물리 충돌 해소가 끝난 뒤 판정해야 그 스텝의
+        // 실제 반사 결과에 대해 보정할 수 있다(check_goal 직전이 적기).
+        self.correct_own_goal_deflections();
         for c in &mut self.combat {
             c.tick_status();
         }
@@ -496,6 +503,7 @@ impl PhysicsWorld {
     ) {
         // 1) 수집 + 필터(둘 다 로봇 부위 & 서로 다른 로봇) + 오름차순 정규화
         let mut hits: Vec<((usize, usize), (usize, usize))> = Vec::new();
+        let ball_ch = self.bodies[self.ball].colliders()[0];
         while let Ok(CollisionEvent::Started(h1, h2, _)) = cr.try_recv() {
             let a = self.part_map.get(&h1).copied();
             let b = self.part_map.get(&h2).copied();
@@ -504,6 +512,16 @@ impl PhysicsWorld {
                 let ((ra, _), (rb, _)) = pair;
                 if self.teams[ra] != self.teams[rb] {
                     hits.push(pair);
+                }
+            }
+            // 공 접촉 로봇 기록(KB-63: 자책골 디플렉션 보정의 책임 판정용).
+            if h1 == ball_ch {
+                if let Some(&(ri, _)) = self.part_map.get(&h2) {
+                    self.last_ball_toucher = Some(ri);
+                }
+            } else if h2 == ball_ch {
+                if let Some(&(ri, _)) = self.part_map.get(&h1) {
+                    self.last_ball_toucher = Some(ri);
                 }
             }
         }
@@ -580,6 +598,50 @@ impl PhysicsWorld {
         }
     }
 
+    /// 이 반경(m) 안이면 자책골 디플렉션 보정 대상(KB-63).
+    const OWN_GOAL_DEFLECT_GUARD_RADIUS: f32 = 1.5;
+
+    /// 팀의 자기 골 x좌표(check_goal 득점 규약과 정합: Blue 득점 시 score.0
+    /// 이므로 +half_w 골은 Red의 자기 골). control::own_goal_x와 같은 규약이지만
+    /// 계층 분리를 위해 물리 레이어에 별도로 둔다.
+    fn team_own_goal_x(team: Team) -> f32 {
+        match team {
+            Team::Blue => -FIELD_W / 2.0,
+            Team::Red => FIELD_W / 2.0,
+        }
+    }
+
+    /// 자책골 디플렉션 완화(KB-63): 공을 마지막으로 건드린 로봇(`last_ball_toucher`)의
+    /// 자기 골 쪽으로 공 속도가 향하고 골에 가까우면(`OWN_GOAL_DEFLECT_GUARD_RADIUS`
+    /// 이내) 그 방향 성분만 제거한다. `wants_kick`의 자책골 회피는 "차기" 액션에만
+    /// 적용되고 몸통 충돌 반사에는 적용되지 않아(KB-61 헤드리스 조사에서 확인)
+    /// 물리 레이어에서 별도로 보정해야 한다.
+    ///
+    /// **로봇의 현재 근접이 아니라 "마지막 접촉자" 기준**이어야 한다: 실측 재현에서,
+    /// 디플렉션은 로봇과 공이 떨어진 뒤에도 공이 그 여세로 계속 굴러 골까지
+    /// 들어가는 경우가 대부분이라(로봇은 이미 0.5m 이상 떨어져 있음), "현재 접촉
+    /// 중"으로 게이팅하면 정작 필요한 순간에 보정이 걸리지 않는다. 접선 성분은
+    /// 그대로 둬 자연스러운 디플렉션(옆으로 튐)은 허용한다.
+    fn correct_own_goal_deflections(&mut self) {
+        let Some(ri) = self.last_ball_toucher else {
+            return;
+        };
+        let gx = Self::team_own_goal_x(self.teams[ri]);
+        let bp = *self.bodies[self.ball].translation();
+        let gdx = gx - bp.x;
+        let gdy = -bp.y;
+        let gdist = (gdx * gdx + gdy * gdy).sqrt();
+        if gdist <= 1e-6 || gdist >= Self::OWN_GOAL_DEFLECT_GUARD_RADIUS {
+            return;
+        }
+        let dir = vector![gdx / gdist, gdy / gdist];
+        let v = *self.bodies[self.ball].linvel();
+        let radial = v.x * dir.x + v.y * dir.y;
+        if radial > 0.0 {
+            self.bodies[self.ball].set_linvel(v - dir * radial, true);
+        }
+    }
+
     /// 공을 중앙으로 복귀(속도 0). 득점/이탈 안전망 공용.
     fn recenter_ball(&mut self) {
         let b = &mut self.bodies[self.ball];
@@ -653,6 +715,12 @@ impl PhysicsWorld {
     #[cfg(test)]
     pub fn force_break_for_test(&mut self, i: usize) {
         self.combat[i].force_down();
+    }
+
+    /// 마지막으로 공을 건드린 로봇 인덱스(테스트/디버그).
+    #[cfg(test)]
+    pub fn last_ball_toucher_for_test(&self) -> Option<usize> {
+        self.last_ball_toucher
     }
 
     /// 로봇 i가 스턴 중인지(테스트 전용).
@@ -1070,6 +1138,71 @@ mod tests {
         assert!(scored, "공이 오른쪽 골로 들어가 Blue 득점해야 함");
         // 득점 후 공은 킥오프로 리셋
         assert!(w.snapshot().ball.pos.x.abs() < 0.1);
+    }
+
+    /// 자책골 디플렉션 완화(KB-63): 로봇 몸통과 붙어있는 공이 그 로봇의 자기 골
+    /// 쪽으로(반경 내) 빠르게 튕기면, 골 방향 성분을 제거해 자기 골로 빨려들어가지
+    /// 않게 한다. `wants_kick`의 자책골 회피는 "차기" 액션에만 적용되고 몸통 충돌
+    /// 반사에는 적용 안 되므로(KB-61 조사에서 확인) 물리 레이어에서 별도 보정.
+    #[test]
+    fn own_goal_deflection_correction_removes_radial_velocity_toward_own_goal() {
+        let mut w = PhysicsWorld::new_kickoff();
+        // robot1(Red)을 멀리 치워 이 시나리오와 무관하게 함.
+        w.set_robot_for_test(1, vector![5.0, 3.0], 0.0);
+        // robot0(Blue)를 공보다 골에서 먼 쪽(뒤)에 붙여 배치 — 실측(KB-61 조사)에서 확인한
+        // "수비가 공보다 골에서 먼 쪽에서 접촉"과 같은 기하. 보정이 없으면 겹침 해소
+        // 충돌이 공을 오히려 자기 골 쪽(-x)으로 더 떠민다.
+        w.set_robot_for_test(0, vector![-5.6, 0.0], 0.0);
+        w.set_ball_for_test(vector![-5.8, 0.0], vector![-3.0, 0.0]); // 자기 골(-6,0) 코앞
+        w.step(&[ControlOutput::default(); 2]);
+        let vx = w.snapshot().ball.vel.x;
+        assert!(
+            vx >= -1e-3,
+            "골 코앞에서 몸통에 붙은 공은 자기 골 쪽 속도 성분이 제거돼야 함 (vx={vx})"
+        );
+    }
+
+    /// 골에서 멀면(가드 반경 밖) 몸통 접촉 중이어도 보정이 걸리지 않아야 한다
+    /// (평소 드리블/밀기 동작에 영향 없어야 함).
+    #[test]
+    fn own_goal_deflection_correction_does_not_apply_far_from_goal() {
+        let mut w = PhysicsWorld::new_kickoff();
+        w.set_robot_for_test(1, vector![5.0, 3.0], 0.0);
+        // robot0(Blue)를 자기 골(-6,0)에서 멀리 두고, 공을 몸통에 붙여 자기 골 쪽으로.
+        w.set_robot_for_test(0, vector![-1.0, 0.0], 0.0);
+        w.set_ball_for_test(vector![-0.9, 0.0], vector![-3.0, 0.0]);
+        w.step(&[ControlOutput::default(); 2]);
+        let vx = w.snapshot().ball.vel.x;
+        assert!(
+            vx < -0.1,
+            "골에서 멀면 보정으로 속도가 0/역전되면 안 됨(자연스러운 충돌 감쇠는 허용) (vx={vx})"
+        );
+    }
+
+    /// 자책골 디플렉션 완화 재발방지(KB-63 조사): 실측에서, 로봇과 공이 최초 접촉한
+    /// 뒤 서로 떨어져도(더 이상 근접이 아니어도) 공은 그 여세로 계속 굴러 골까지
+    /// 들어갔다. 로봇의 "현재 근접"이 아니라 "마지막 접촉자" 기준으로 보정해야
+    /// 이 경우를 잡을 수 있다.
+    #[test]
+    fn own_goal_deflection_correction_persists_after_robot_separates_from_ball() {
+        let mut w = PhysicsWorld::new_kickoff();
+        w.set_robot_for_test(1, vector![5.0, 3.0], 0.0);
+        // 1) robot0이 공과 접촉해 last_ball_toucher를 남긴다(사전조건 확인).
+        w.set_robot_for_test(0, vector![-5.6, 0.0], 0.0);
+        w.set_ball_for_test(vector![-5.8, 0.0], vector![-3.0, 0.0]);
+        w.step(&[ControlOutput::default(); 2]);
+        assert_eq!(w.last_ball_toucher_for_test(), Some(0), "사전조건: 접촉 기록");
+
+        // 2) robot0을 멀리 떼어놓고, 공은 여전히 골 코앞에서 자기 골 쪽 속도 유지
+        //    (접촉이 끝난 뒤에도 여세로 계속 굴러가는 상황 재현).
+        w.set_robot_for_test(0, vector![0.0, 3.0], 0.0);
+        w.set_ball_for_test(vector![-5.8, 0.0], vector![-3.0, 0.0]);
+        w.step(&[ControlOutput::default(); 2]);
+        let vx = w.snapshot().ball.vel.x;
+        assert!(
+            vx >= -1e-3,
+            "로봇이 떨어져도 마지막 접촉자 기준으로 계속 보정돼야 함 (vx={vx})"
+        );
     }
 
     #[test]

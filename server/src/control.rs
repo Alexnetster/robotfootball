@@ -67,6 +67,29 @@ fn own_goal_x(team: Team) -> f32 {
     }
 }
 
+/// 자기 골 근처에서 공에 접근할 때 감속을 시작하는 반경(m). 이 안이면 몸통 충돌
+/// 반사가 우연히 자기 골 쪽으로 튈 위험을 줄이려 접근 추력을 낮춘다(KB-62).
+const OWN_GOAL_CAUTION_RADIUS: f32 = 1.5;
+/// 공이 자기 골 바로 앞(거리 0)일 때의 최소 접근 추력. 0으로 두면 걷어낼 수 없으므로
+/// 완전히 멈추지는 않는다.
+const OWN_GOAL_MIN_THRUST: f32 = 0.35;
+
+/// 공이 자기 골에서 `OWN_GOAL_CAUTION_RADIUS` 밖이면 1.0(평소 전력 접근), 안쪽이면
+/// 거리에 비례해 `OWN_GOAL_MIN_THRUST`까지 선형으로 낮아진다. Attacker/Defender 공용
+/// — 몸통 충돌 반사로 인한 자책골이 역할과 무관하게 나타남을 헤드리스 시뮬레이션
+/// 조사(KB-61)에서 확인했다.
+fn own_goal_caution_scale(team: Team, ball: &BallState) -> f32 {
+    let gx = own_goal_x(team);
+    let dx = ball.pos.x - gx;
+    let dy = ball.pos.y;
+    let dist = (dx * dx + dy * dy).sqrt();
+    if dist >= OWN_GOAL_CAUTION_RADIUS {
+        1.0
+    } else {
+        OWN_GOAL_MIN_THRUST + (1.0 - OWN_GOAL_MIN_THRUST) * (dist / OWN_GOAL_CAUTION_RADIUS)
+    }
+}
+
 /// 공이 정면 사거리 안 + 정면이 상대 골 방향으로 정렬 → 슛(자책골 회피).
 /// Attacker/Defender 공용(둘 다 자책골 회피 조건은 동일해야 함).
 fn wants_kick(view: &GameView) -> bool {
@@ -124,7 +147,8 @@ impl Controller for ChaseBallAi {
             diff += std::f32::consts::TAU;
         }
         ControlOutput {
-            thrust: 1.0,
+            // 자기 골 근처 공엔 감속 접근(KB-62: 몸통충돌 반사 자책골 완화).
+            thrust: own_goal_caution_scale(view.me.id, view.ball),
             turn: diff.clamp(-1.0, 1.0),
             // AI는 달리기를 쓰지 않는다(KB-45 YAGNI: AI sprint 없음).
             run: false,
@@ -230,9 +254,10 @@ impl Controller for DefenderAi {
         let tdx = gtx - view.me.pos.x;
         let tdy = gty - view.me.pos.y;
         let to_target = (tdx * tdx + tdy * tdy).sqrt();
-        // 도착했으면 전진 멈추고 공 조준(대기), 아니면 목표로 전진.
+        // 도착했으면 전진 멈추고 공 조준(대기), 아니면 목표로 전진(자기 골 근처
+        // 공엔 감속 접근 — KB-62: 몸통충돌 반사 자책골 완화).
         let (aimx, aimy, thrust) = if to_target > DEFENDER_ARRIVE {
-            (tdx, tdy, 1.0)
+            (tdx, tdy, own_goal_caution_scale(view.me.id, view.ball))
         } else {
             (view.ball.pos.x - view.me.pos.x, view.ball.pos.y - view.me.pos.y, 0.0)
         };
@@ -358,6 +383,50 @@ mod tests {
         let (me, ball) = view_at(Team::Blue, Vec2 { x: 0.0, y: 0.0 }, 0.0, Vec2 { x: 3.0, y: 0.0 });
         let mut ai = ChaseBallAi::default();
         assert!(!ai.decide(&GameView { me: &me, ball: &ball }).kick, "사거리 밖 무슛");
+    }
+
+    // -- 자책골 완화: 자기 골 근처 접근 캐우션(KB-62) ------------------------------
+
+    /// 공이 자기 골에서 멀면 평소처럼 전력 접근(감속 없음).
+    #[test]
+    fn own_goal_caution_scale_is_full_when_ball_far_from_own_goal() {
+        let ball = BallState { pos: Vec2 { x: 5.0, y: 0.0 }, vel: Vec2 { x: 0.0, y: 0.0 } };
+        assert_eq!(
+            own_goal_caution_scale(Team::Blue, &ball),
+            1.0,
+            "공이 멀면 평소처럼 전력 접근해야 함"
+        );
+    }
+
+    /// 공이 자기 골 코앞이면 접근 추력을 낮추되(몸통충돌 반사 자책골 위험 완화),
+    /// 완전히 멈추면(걷어낼 수 없음) 안 된다.
+    #[test]
+    fn own_goal_caution_scale_reduced_near_own_goal_but_not_zero() {
+        let ball = BallState { pos: Vec2 { x: -5.9, y: 0.0 }, vel: Vec2 { x: 0.0, y: 0.0 } };
+        let scale = own_goal_caution_scale(Team::Blue, &ball);
+        assert!(scale < 1.0, "자기 골 근처면 감속해야 함 (scale={scale})");
+        assert!(scale > 0.0, "완전히 멈추면 안 됨(그래도 걷어내야 함) (scale={scale})");
+    }
+
+    /// 공격형도 자기 골 근처 공에는 추력을 낮춰야 한다(역할 무관 — 몸통충돌 자책골은
+    /// 공격형에서도 관측됨, KANBAN 자살골 항목 참고).
+    #[test]
+    fn chaseball_reduces_thrust_near_own_goal() {
+        let (me_far, ball_far) = view_at(Team::Blue, Vec2 { x: 0.0, y: 0.0 }, 0.0, Vec2 { x: 5.0, y: 0.0 });
+        let far_thrust = ChaseBallAi::default()
+            .decide(&GameView { me: &me_far, ball: &ball_far })
+            .thrust;
+
+        let (me_near, ball_near) = view_at(Team::Blue, Vec2 { x: -4.0, y: 0.0 }, 0.0, Vec2 { x: -5.9, y: 0.0 });
+        let near_thrust = ChaseBallAi::default()
+            .decide(&GameView { me: &me_near, ball: &ball_near })
+            .thrust;
+
+        assert!(
+            near_thrust < far_thrust,
+            "자기 골 근처 공엔 더 낮은 추력으로 접근해야 함 (near={near_thrust}, far={far_thrust})"
+        );
+        assert!(near_thrust > 0.0, "완전히 멈추면 안 됨");
     }
 
     /// 정상 주행(속도 충분)에서는 스턱 판정이 되지 않아야 한다(오탐 방지).
@@ -536,6 +605,26 @@ mod tests {
         assert!(
             target_dist <= ball_dist + 1e-3,
             "목표가 공의 실제 위치보다 골에서 더 멀면 안 됨 (target_dist={target_dist}, ball_dist={ball_dist})"
+        );
+    }
+
+    /// 수비형도 목표로 접근 중(도착 전)이면 자기 골 근처 공에는 추력을 낮춰야 한다(KB-62).
+    #[test]
+    fn defender_reduces_thrust_near_own_goal_while_approaching() {
+        // 두 시나리오 모두 to_target > DEFENDER_ARRIVE(아직 도착 전)를 유지하도록 배치.
+        let (me_far, ball_far) = view_at(Team::Blue, Vec2 { x: -1.0, y: 0.0 }, 0.0, Vec2 { x: 5.0, y: 1.0 });
+        let far_out = DefenderAi::default().decide(&GameView { me: &me_far, ball: &ball_far });
+
+        let (me_near, ball_near) = view_at(Team::Blue, Vec2 { x: -3.0, y: 1.0 }, 0.0, Vec2 { x: -5.9, y: 0.0 });
+        let near_out = DefenderAi::default().decide(&GameView { me: &me_near, ball: &ball_near });
+
+        assert!(far_out.thrust > 0.0, "사전조건: 원거리 시나리오는 아직 도착 전이어야 함");
+        assert!(near_out.thrust > 0.0, "사전조건: 근거리 시나리오도 아직 도착 전이어야 함");
+        assert!(
+            near_out.thrust < far_out.thrust,
+            "자기 골 근처 공엔 수비형도 추력을 낮춰야 함 (near={}, far={})",
+            near_out.thrust,
+            far_out.thrust
         );
     }
 
