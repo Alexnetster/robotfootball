@@ -2,6 +2,7 @@
 // RTT 표시. index.html의 Link Monitor 카드(Neon Telemetry Arena 콘솔) 마크업과 짝을 이룬다.
 import { sendNetsim, sendPing, getRtt } from "./net";
 import { setInterpEnabled } from "./interp";
+import { setShowVelocityVectors, setShowAiPredictions } from "./render";
 
 const PING_INTERVAL_MS = 1000;
 const RTT_REFRESH_MS = 250;
@@ -26,6 +27,8 @@ export function initDevPanel(): void {
   const jitterInput = document.getElementById("netsim-jitter") as HTMLInputElement | null;
   const dropInput = document.getElementById("netsim-drop") as HTMLInputElement | null;
   const interpToggle = document.getElementById("interp-toggle") as HTMLInputElement | null;
+  const velVectorToggle = document.getElementById("vel-vector-toggle") as HTMLInputElement | null;
+  const aiPredictToggle = document.getElementById("ai-predict-toggle") as HTMLInputElement | null;
   const rttEl = document.getElementById("rtt-value");
 
   const fields: RangeField[] = [];
@@ -51,6 +54,16 @@ export function initDevPanel(): void {
   if (interpToggle) {
     setInterpEnabled(interpToggle.checked);
     interpToggle.addEventListener("change", () => setInterpEnabled(interpToggle.checked));
+  }
+
+  if (velVectorToggle) {
+    setShowVelocityVectors(velVectorToggle.checked);
+    velVectorToggle.addEventListener("change", () => setShowVelocityVectors(velVectorToggle.checked));
+  }
+
+  if (aiPredictToggle) {
+    setShowAiPredictions(aiPredictToggle.checked);
+    aiPredictToggle.addEventListener("change", () => setShowAiPredictions(aiPredictToggle.checked));
   }
 
   setInterval(() => sendPing(), PING_INTERVAL_MS);

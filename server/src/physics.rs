@@ -782,12 +782,18 @@ impl PhysicsWorld {
         // 물리 레이어는 슬롯 소유자(사람/AI)를 모르므로 항상 "ai".
         // sim 루프(main.rs)가 브로드캐스트 직전 사람 점유 슬롯을 덮어쓴다(KB-55).
         let ctrl = (0..self.robots.len()).map(|_| "ai".to_string()).collect();
+        // 물리 레이어는 컨트롤러를 모르므로 항상 None(KB-68/69). sim 루프가
+        // Controller::state_label()/debug_target()으로 덮어쓴다(ctrl과 동일 패턴).
+        let ai_state = vec![None; self.robots.len()];
+        let ai_target = vec![None; self.robots.len()];
         GameState {
             robots,
             ball,
             score: self.score,
             time: self.time,
             ctrl,
+            ai_state,
+            ai_target,
         }
     }
 }

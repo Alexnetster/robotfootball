@@ -79,6 +79,14 @@ pub struct GameState {
     /// 인덱스 0=Blue, 1=Red. physics는 소유자를 모르므로 항상 "ai"를 채우고,
     /// sim 루프가 브로드캐스트 직전 사람 점유 슬롯을 "human"으로 덮어쓴다.
     pub ctrl: Vec<String>,
+    /// 슬롯별 AI 의사결정 상태 라벨(KB-68, 관측성/시각화용). `ctrl`과 같은 길이·
+    /// 인덱스 규약. physics는 컨트롤러를 모르므로 항상 `None`을 채우고, sim 루프가
+    /// `Controller::state_label()`로 덮어쓴다(사람 슬롯은 `None` 유지).
+    pub ai_state: Vec<Option<&'static str>>,
+    /// 슬롯별 AI가 실제로 겨냥한 좌표(KB-69, 관측성/시각화용). `ctrl`과 같은 길이·
+    /// 인덱스 규약. physics는 컨트롤러를 모르므로 항상 `None`을 채우고, sim 루프가
+    /// `Controller::debug_target()`으로 덮어쓴다(사람/목표 없는 AI는 `None` 유지).
+    pub ai_target: Vec<Option<Vec2>>,
 }
 
 /// 컨트롤러가 보는 읽기 전용 뷰
@@ -120,6 +128,8 @@ impl GameState {
             })
             .collect();
         let ctrl = vec!["ai".to_string(); robots.len()];
+        let ai_state = vec![None; robots.len()];
+        let ai_target = vec![None; robots.len()];
         GameState {
             robots,
             ball: BallState {
@@ -129,6 +139,8 @@ impl GameState {
             score: (0, 0),
             time: 0.0,
             ctrl,
+            ai_state,
+            ai_target,
         }
     }
 }

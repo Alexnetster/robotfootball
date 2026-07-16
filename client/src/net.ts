@@ -5,6 +5,7 @@ export type Robot = {
   id: "Blue" | "Red";
   pos: Vec2;
   rot: number;
+  vel: Vec2;
   /** 부위별 (부위명, HP비율 0..1). 3b부터 서버가 방출. */
   parts?: [string, number][];
   down?: Down;
@@ -15,7 +16,7 @@ export type Robot = {
   /** 로드아웃/프리셋 id("striker"|"guard" 등). 렌더 외형 구분에 사용(KB-56). */
   robot?: string;
 };
-export type Ball = { pos: Vec2 };
+export type Ball = { pos: Vec2; vel: Vec2 };
 /** 슬롯별 조종 주체(KB-55): index 0=Blue, 1=Red, 값 "human"|"ai". */
 export type GameState = {
   robots: Robot[];
@@ -23,6 +24,12 @@ export type GameState = {
   score: [number, number];
   time: number;
   ctrl?: string[];
+  /** 슬롯별 AI 의사결정 상태 라벨(KB-68): "CHASE"|"ESCAPE"|"GUARD_HOME"|
+   * "GUARD_ENGAGE"|"HOLD" 등, robots와 같은 인덱스. 사람 슬롯은 null. */
+  ai_state?: (string | null)[];
+  /** 슬롯별 AI가 실제로 겨냥한 좌표(KB-69, 현재는 DefenderAi만). robots와 같은
+   * 인덱스. 사람/목표 없는 AI(탈출 기동 중 등)는 null. */
+  ai_target?: (Vec2 | null)[];
 };
 
 /** 보간용 스냅샷 버퍼 항목. time=서버 sim초(다운링크 state.time). */

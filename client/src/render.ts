@@ -1,5 +1,22 @@
 import type { GameState, Robot } from "./net";
 const FIELD_W = 12, FIELD_H = 8, GOAL_W = 2.4;
+/** 수비형 AI의 공 위치 예측 시간(초). server/src/control.rs의 LOOKAHEAD와 반드시
+ * 값을 맞춰야 한다(서버 로직 시각화이지 별도 예측이 아님) — 공 예측 고스트가
+ * "AI가 실제로 내다보는 지점"을 그대로 보여주도록. */
+const LOOKAHEAD = 0.35;
+
+// ── 속도 벡터 표시 토글(KB-65, 개발패널 연동) ─────────────────────────
+let showVelocityVectors = true;
+export function setShowVelocityVectors(v: boolean): void {
+  showVelocityVectors = v;
+}
+
+// ── AI 예측/의도 표시 토글(공 예측 고스트 KB-64 + guard_target 마커 KB-69,
+// 개발패널 연동). 둘 다 COL.predict 색으로 묶인 같은 개념이라 토글도 하나로 공유.
+let showAiPredictions = true;
+export function setShowAiPredictions(v: boolean): void {
+  showAiPredictions = v;
+}
 
 // ── Neon Telemetry Arena 팔레트(ADR-014) ──────────────────────────────
 const COL = {
@@ -16,6 +33,10 @@ const COL = {
   redEye: "#ffc4cb",
   hpBg: "#0d1220",
   hpBorder: "#242c3a",
+  /** AI 예측/의도 시각화 전용 색(공 예측 고스트, guard_target 마커 등, KB-64+). */
+  predict: "#7DF9FF",
+  /** 속도 벡터 화살표 색(rviz/GCS 관습, KB-65). 팀색/예측색과 겹치지 않게 중성톤. */
+  velocity: "#B8C4D9",
 } as const;
 
 /** "#rrggbb" + 알파 → rgba() 문자열. */
@@ -70,6 +91,15 @@ let lastT = 0;
 
 const GAIT_FREQ = 2.6; // 보행 주파수(rad / 이동 m)
 
+/** 다리 로컬 x(전방 +)로 앞다리/뒷다리 부위를 골라 HP비율(0..1)을 찾는다(KB-67).
+ * 파츠 없음(부위 데이터 미방출 등)이면 정상(1)으로 취급. */
+function legHpRatio(parts: [string, number][] | undefined, legX: number): number {
+  if (!parts) return 1;
+  const name = legX >= 0 ? "foreleg" : "hindleg";
+  const found = parts.find(([n]) => n === name);
+  return found ? Math.max(0, Math.min(1, found[1])) : 1;
+}
+
 /** 로봇 몸체+다리+발자국 텔레메트리 링을 그린다(로컬 원점=로봇 중심, +x=전방). */
 function drawRobotBody(ctx: CanvasRenderingContext2D, r: Robot, phase: number, scale: number): void {
   const chassis = chassisFor(r);
@@ -102,17 +132,23 @@ function drawRobotBody(ctx: CanvasRenderingContext2D, r: Robot, phase: number, s
   ctx.lineCap = "round";
   for (const l of legs.map((l) => ({ x: l.x * scale, y: l.y * scale, ph: l.ph }))) {
     const side = l.y > 0 ? 1 : -1;
-    const footX = l.x + Math.sin(phase + l.ph) * swing;
-    const footY = l.y + side * reach;
+    // 부위별 손상 절뚝임(KB-67): 앞/뒷다리 HP비율만큼 스트라이드가 짧아지고
+    // 발자국이 옅어진다 — 몸 전체를 뭉뚱그린 최소 HP가 아니라 실제로 손상된
+    // 그 다리만 표시(정직한 구조 손상, 장식이 아님).
+    const limp = legHpRatio(r.parts, l.x);
+    const legSwing = swing * (0.35 + 0.65 * limp);
+    const legReach = reach * (0.55 + 0.45 * limp);
+    const footX = l.x + Math.sin(phase + l.ph) * legSwing;
+    const footY = l.y + side * legReach;
     const kneeX = (l.x + footX) / 2;
     const kneeY = (l.y + footY) / 2 + side * 2 * scale; // 바깥으로 살짝 꺾인 무릎
 
-    // 접지 위상(0..1, 1=완전 접지) → 저알파 링, 페이드 인/아웃.
+    // 접지 위상(0..1, 1=완전 접지) → 저알파 링, 페이드 인/아웃(손상 다리는 더 옅게).
     const contact = Math.max(0, Math.sin(phase + l.ph));
     if (contact > 0.05) {
       ctx.save();
       ctx.strokeStyle = teamCol;
-      ctx.globalAlpha = contact * 0.28;
+      ctx.globalAlpha = contact * 0.28 * (0.3 + 0.7 * limp);
       ctx.lineWidth = 1.4;
       ctx.beginPath();
       ctx.arc(footX, footY, (6 + contact * 4) * scale, 0, Math.PI * 2);
@@ -182,6 +218,38 @@ function drawCapsules(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: 
       ctx.fill();
     }
   }
+}
+
+/** 속도 벡터 화살표(KB-65, rviz/드론 GCS 관습): 월드 좌표(wx,wy)에서 (vx,vy) 방향
+ * ·크기로 화살표를 그린다. 화면 스케일이 아니라 월드 미터 단위로 클램프해
+ * 필드 크기 대비 과장되지 않게 한다(REACH·MAX_LEN은 순수 시각적 튜닝값). */
+function drawVelocityArrow(
+  ctx: CanvasRenderingContext2D,
+  tx: (x: number) => number,
+  ty: (y: number) => number,
+  wx: number, wy: number, vx: number, vy: number,
+): void {
+  if (!showVelocityVectors) return;
+  const speed = Math.hypot(vx, vy);
+  if (speed < 0.15) return;
+  const REACH = 0.25, MAX_LEN = 1.6; // 초/m, 시각적 튜닝(물리량 아님)
+  const k = Math.min(speed * REACH, MAX_LEN) / speed;
+  const cx = tx(wx), cy = ty(wy);
+  const px = tx(wx + vx * k), py = ty(wy + vy * k);
+  ctx.save();
+  ctx.strokeStyle = rgba(COL.velocity, 0.7);
+  ctx.fillStyle = rgba(COL.velocity, 0.7);
+  ctx.lineWidth = 1.6;
+  ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(px, py); ctx.stroke();
+  const ang = Math.atan2(py - cy, px - cx);
+  const ah = 5;
+  ctx.beginPath();
+  ctx.moveTo(px, py);
+  ctx.lineTo(px - ah * Math.cos(ang - 0.5), py - ah * Math.sin(ang - 0.5));
+  ctx.lineTo(px - ah * Math.cos(ang + 0.5), py - ah * Math.sin(ang + 0.5));
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
 }
 
 /** 팀색 글로우 프레임 골대. */
@@ -301,7 +369,9 @@ export function render(ctx: CanvasRenderingContext2D, s: GameState): void {
   drawGoal(ctx, width - 32 * k, ty(GOAL_W / 2), 26 * k, GOAL_W * sy, 4 * k, COL.red);
 
   // 로봇
-  for (const r of s.robots) {
+  for (let ri = 0; ri < s.robots.length; ri++) {
+    const r = s.robots[ri];
+    const aiState = s.ai_state?.[ri];
     const downed = r.st?.includes("downed") ?? false;
     const stunned = r.st?.includes("stun") ?? false;
 
@@ -314,7 +384,12 @@ export function render(ctx: CanvasRenderingContext2D, s: GameState): void {
     const inst = dt > 0 ? d / dt : 0;
     g.spd += (inst - g.spd) * Math.min(1, dt * 8);
     g.px = r.pos.x; g.py = r.pos.y;
-    g.phase += g.spd * dt * GAIT_FREQ;
+    // 스턴(KB-66): 입력을 무시당한 상태를 "그 순간 자세로 다리가 멈춤"으로 정직하게
+    // 보여준다(스턴 링만 얹는 게 아니라 위상 자체를 고정). 넉백 등 잔여 이동으로
+    // 몸통이 밀릴 수 있어 spd/px/py 추적은 계속하되, phase만 고정한다.
+    if (!stunned) {
+      g.phase += g.spd * dt * GAIT_FREQ;
+    }
     gait.set(gkey, g);
 
     const cx = tx(r.pos.x), cy = ty(r.pos.y);
@@ -370,6 +445,64 @@ export function render(ctx: CanvasRenderingContext2D, s: GameState): void {
 
     // HP/스태미나 캡슐
     drawCapsules(ctx, cx, cy, r);
+
+    // 속도 벡터(KB-65): 실제 이동 방향·속력을 그대로 노출(로봇 회전과 무관).
+    drawVelocityArrow(ctx, tx, ty, r.pos.x, r.pos.y, r.vel.x, r.vel.y);
+
+    // AI 상태 배지(KB-68): control.rs 상태머신이 지금 어느 분기인지 그대로 텍스트로.
+    // 사람 슬롯은 ai_state가 null이라 자연히 생략됨.
+    if (aiState) {
+      ctx.fillStyle = rgba(COL.predict, 0.85);
+      ctx.font = "700 10px " + '"SF Mono","JetBrains Mono",Menlo,Consolas,monospace';
+      ctx.textAlign = "center";
+      ctx.fillText(aiState, cx, cy + 32);
+      ctx.textAlign = "left";
+    }
+
+    // 수비형 guard_target 마커(KB-69): 실제로 겨냥 중인 좌표에 X + 로봇까지 점선.
+    // 공 예측 고스트(위)와 같은 색이라 "예측→목표점→골"이 한 그림으로 이어진다.
+    const target = s.ai_target?.[ri];
+    if (showAiPredictions && target) {
+      const gx = tx(target.x), gy = ty(target.y);
+      ctx.save();
+      ctx.strokeStyle = rgba(COL.predict, 0.3);
+      ctx.lineWidth = 1;
+      ctx.setLineDash([2, 4]);
+      ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(gx, gy); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.strokeStyle = rgba(COL.predict, 0.75);
+      ctx.lineWidth = 1.5;
+      const m = 4.5;
+      ctx.beginPath();
+      ctx.moveTo(gx - m, gy - m); ctx.lineTo(gx + m, gy + m);
+      ctx.moveTo(gx + m, gy - m); ctx.lineTo(gx - m, gy + m);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  // 공 예측 고스트(KB-64): 수비형 AI가 실제로 내다보는 미래 위치(LOOKAHEAD초 뒤,
+  // control.rs guard_target과 동일 공식)를 점선+흐린 점으로 시각화. 새 스냅샷
+  // 필드 없이 클라에서 그대로 재계산 — 서버 로직의 진짜 상태를 보여주는 것.
+  if (showAiPredictions) {
+    const predX = s.ball.pos.x + s.ball.vel.x * LOOKAHEAD;
+    const predY = s.ball.pos.y + s.ball.vel.y * LOOKAHEAD;
+    const pgx = tx(predX), pgy = ty(predY);
+    const bx0 = tx(s.ball.pos.x), by0 = ty(s.ball.pos.y);
+    if (Math.hypot(pgx - bx0, pgy - by0) > 2) {
+      ctx.save();
+      ctx.strokeStyle = rgba(COL.predict, 0.4);
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 4]);
+      ctx.beginPath(); ctx.moveTo(bx0, by0); ctx.lineTo(pgx, pgy); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = rgba(COL.predict, 0.55);
+      ctx.beginPath(); ctx.arc(pgx, pgy, 4.5, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = rgba(COL.predict, 0.8);
+      ctx.lineWidth = 1.2;
+      ctx.stroke();
+      ctx.restore();
+    }
   }
 
   // 공 + 트레일
@@ -394,6 +527,9 @@ export function render(ctx: CanvasRenderingContext2D, s: GameState): void {
   ctx.lineWidth = 2;
   ctx.beginPath(); ctx.arc(bx, by, 11, 0, Math.PI * 2); ctx.stroke();
   ctx.restore();
+
+  // 속도 벡터(KB-65): 공도 로봇과 동일하게 표시.
+  drawVelocityArrow(ctx, tx, ty, s.ball.pos.x, s.ball.pos.y, s.ball.vel.x, s.ball.vel.y);
 
   // 인캔버스 스코어/시간 없음 — 크롬 HUD(hud.ts)에서 담당.
 }

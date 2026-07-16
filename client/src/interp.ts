@@ -46,10 +46,15 @@ function interpolateState(s0: GameState, s1: GameState, alphaRaw: number): GameS
   });
   return {
     robots,
-    ball: { pos: { x: lerp(s0.ball.pos.x, s1.ball.pos.x, t), y: lerp(s0.ball.pos.y, s1.ball.pos.y, t) } },
+    ball: {
+      pos: { x: lerp(s0.ball.pos.x, s1.ball.pos.x, t), y: lerp(s0.ball.pos.y, s1.ball.pos.y, t) },
+      vel: s1.ball.vel, // 이산 필드: 보간 대상 아님(속도 벡터 표시용 KB-65, 최신값 유지).
+    },
     score: s1.score,
     time: s1.time,
     ctrl: s1.ctrl, // 이산 필드: 최신 스냅샷 값 그대로(보간 대상 아님).
+    ai_state: s1.ai_state, // 이산 필드(KB-68): 보간 대상 아님.
+    ai_target: s1.ai_target, // 이산 필드(KB-69): 보간 대상 아님.
   };
 }
 

@@ -7,16 +7,35 @@ pub trait Controller: Send {
     /// 슬롯 컨트롤러 스왑(AI↔사람) 시 구체 타입으로 downcast하기 위함
     /// (예: `SlotControllers`가 사람 슬롯에 최신 입력을 주입).
     fn as_any_mut(&mut self) -> &mut dyn Any;
+    /// 현재 내부 의사결정 상태 라벨(관측성/시각화용, KB-68). 직전 `decide()` 호출이
+    /// 어떤 분기를 탔는지 그대로 노출 — 새 로직이 아니라 기존 상태머신의 가시화.
+    /// AI만 의미 있는 값을 주고, 사람 컨트롤러 등은 기본값(None)을 그대로 쓴다.
+    fn state_label(&self) -> Option<&'static str> {
+        None
+    }
+    /// 직전 `decide()`가 실제로 겨냥한 좌표(관측성/시각화용, KB-69). `DefenderAi`의
+    /// `guard_target`을 그대로 노출 — 탈출 기동 중이거나 목표 개념이 없는
+    /// 컨트롤러(공격형/사람)는 기본값(None).
+    fn debug_target(&self) -> Option<(f32, f32)> {
+        None
+    }
 }
 
 /// 공을 향해 전진하는 기본 AI. 벽/펜스/코너에 박혀 정지하면(공을 계속 밀어도
 /// 속도≈0) 스턱으로 판정하고 잠깐 후진+회전으로 빠져나온다(KB-49).
-#[derive(Default)]
 pub struct ChaseBallAi {
     /// 정지(속도<STUCK_SPEED) 지속 프레임 수.
     stuck: u32,
     /// 남은 탈출 기동 프레임(>0이면 후진+회전).
     escape: u32,
+    /// 직전 `decide()`가 택한 상태(KB-68, `state_label`이 그대로 반환).
+    last_state: &'static str,
+}
+
+impl Default for ChaseBallAi {
+    fn default() -> Self {
+        Self { stuck: 0, escape: 0, last_state: "CHASE" }
+    }
 }
 
 /// 스턱 판정 속도 임계(m/s). 이 미만을 정지로 본다.
@@ -115,11 +134,16 @@ impl Controller for ChaseBallAi {
         self
     }
 
+    fn state_label(&self) -> Option<&'static str> {
+        Some(self.last_state)
+    }
+
     fn decide(&mut self, view: &GameView) -> ControlOutput {
         // 탈출 기동 진행 중: 끝날 때까지 후진+회전.
         if self.escape > 0 {
             self.escape -= 1;
             self.stuck = 0;
+            self.last_state = "ESCAPE";
             return escape_output(view.me.pos.y);
         }
         // 정지 지속 추적(공을 밀어도 벽에 막혀 속도가 안 나는 상태).
@@ -132,8 +156,10 @@ impl Controller for ChaseBallAi {
         if self.stuck >= STUCK_LIMIT {
             self.stuck = 0;
             self.escape = ESCAPE_FRAMES;
+            self.last_state = "ESCAPE";
             return escape_output(view.me.pos.y);
         }
+        self.last_state = "CHASE";
 
         // 평소: 공을 향해 전진.
         let dx = view.ball.pos.x - view.me.pos.x;
@@ -167,12 +193,22 @@ impl Controller for ChaseBallAi {
 /// 공에 뭉치지 않는다. 스턱 탈출·슛(자책골 회피) 판정은 공격형과 동일 로직을 공유한다.
 /// 방어 범위 확대 + 조기 인지 설계:
 /// [defender-ai-positioning-design](../../docs/superpowers/specs/2026-07-14-defender-ai-positioning-design.md).
-#[derive(Default)]
 pub struct DefenderAi {
     /// 정지(속도<STUCK_SPEED) 지속 프레임 수.
     stuck: u32,
     /// 남은 탈출 기동 프레임(>0이면 후진+회전).
     escape: u32,
+    /// 직전 `decide()`가 택한 상태(KB-68, `state_label`이 그대로 반환).
+    last_state: &'static str,
+    /// 직전 `decide()`가 겨냥한 `guard_target`(KB-69, `debug_target`이 그대로
+    /// 반환). 탈출 기동 중엔 목표 추적을 쉬므로 `None`.
+    last_target: Option<(f32, f32)>,
+}
+
+impl Default for DefenderAi {
+    fn default() -> Self {
+        Self { stuck: 0, escape: 0, last_state: "GUARD_HOME", last_target: None }
+    }
 }
 
 /// 공(예측 위치)이 상대 진영일 때의 가드 거리(m, 골 앞 대기, 보수적).
@@ -188,6 +224,17 @@ const DEFENDER_ARRIVE: f32 = 0.45;
 const TURN_DEADZONE: f32 = 0.1;
 
 impl DefenderAi {
+    /// 예측 위치(`pos + vel * LOOKAHEAD`)가 자기 진영인지. `guard_target`(가드
+    /// 거리 2단화)과 `state_label`(GUARD_HOME/GUARD_ENGAGE 표시) 양쪽이 같은
+    /// 판정을 공유해야 하므로 분리(KB-68).
+    fn predicted_own_half(team: Team, ball: &BallState) -> bool {
+        let pred_x = ball.pos.x + ball.vel.x * LOOKAHEAD;
+        match team {
+            Team::Blue => pred_x <= 0.0,
+            Team::Red => pred_x >= 0.0,
+        }
+    }
+
     /// 자기 골과 공의 예측 위치를 잇는 선 위, 자기 골에서 유효 가드 거리 이내
     /// 지점을 목표로 계산한다(순수 함수, 테스트 용이). 예측 위치가 자기 진영이면
     /// `GUARD_ENGAGE`(더 멀리 요격), 상대 진영이면 `GUARD_HOME`(골 앞 대기)을 쓴다.
@@ -209,10 +256,7 @@ impl DefenderAi {
         if dist <= 1e-6 {
             return (gx, gy);
         }
-        let own_half = match team {
-            Team::Blue => pred_x <= 0.0,
-            Team::Red => pred_x >= 0.0,
-        };
+        let own_half = Self::predicted_own_half(team, ball);
         let guard = if own_half { GUARD_ENGAGE } else { GUARD_HOME };
         let actual_dx = ball.pos.x - gx;
         let actual_dy = ball.pos.y - gy;
@@ -228,11 +272,21 @@ impl Controller for DefenderAi {
         self
     }
 
+    fn state_label(&self) -> Option<&'static str> {
+        Some(self.last_state)
+    }
+
+    fn debug_target(&self) -> Option<(f32, f32)> {
+        self.last_target
+    }
+
     fn decide(&mut self, view: &GameView) -> ControlOutput {
         // 탈출 기동 진행 중: 끝날 때까지 후진+회전(공격형과 동일 로직).
         if self.escape > 0 {
             self.escape -= 1;
             self.stuck = 0;
+            self.last_state = "ESCAPE";
+            self.last_target = None;
             return escape_output(view.me.pos.y);
         }
         let speed = (view.me.vel.x * view.me.vel.x + view.me.vel.y * view.me.vel.y).sqrt();
@@ -244,6 +298,8 @@ impl Controller for DefenderAi {
         if self.stuck >= STUCK_LIMIT {
             self.stuck = 0;
             self.escape = ESCAPE_FRAMES;
+            self.last_state = "ESCAPE";
+            self.last_target = None;
             return escape_output(view.me.pos.y);
         }
 
@@ -251,14 +307,21 @@ impl Controller for DefenderAi {
         // 바라보며 대기**(골키퍼처럼). 도착 시 목표방향(dx,dy)이 ≈0이 돼 각도가 노이즈가
         // 되고, 높은 회전율 탓에 좌우로 뱅뱅 도는 문제를 방지한다(KB-59).
         let (gtx, gty) = Self::guard_target(view.me.id, view.ball);
+        self.last_target = Some((gtx, gty));
         let tdx = gtx - view.me.pos.x;
         let tdy = gty - view.me.pos.y;
         let to_target = (tdx * tdx + tdy * tdy).sqrt();
         // 도착했으면 전진 멈추고 공 조준(대기), 아니면 목표로 전진(자기 골 근처
         // 공엔 감속 접근 — KB-62: 몸통충돌 반사 자책골 완화).
         let (aimx, aimy, thrust) = if to_target > DEFENDER_ARRIVE {
+            self.last_state = if Self::predicted_own_half(view.me.id, view.ball) {
+                "GUARD_ENGAGE"
+            } else {
+                "GUARD_HOME"
+            };
             (tdx, tdy, own_goal_caution_scale(view.me.id, view.ball))
         } else {
+            self.last_state = "HOLD";
             (view.ball.pos.x - view.me.pos.x, view.ball.pos.y - view.me.pos.y, 0.0)
         };
         let aim_dist = (aimx * aimx + aimy * aimy).sqrt();
@@ -429,6 +492,31 @@ mod tests {
         assert!(near_thrust > 0.0, "완전히 멈추면 안 됨");
     }
 
+    /// 상태 라벨(KB-68): 평소엔 CHASE, 정지 지속으로 탈출 기동 진입 시 ESCAPE.
+    #[test]
+    fn chaseball_state_label_reports_chase_then_escape() {
+        let robot = RobotState {
+            id: Team::Blue,
+            pos: Vec2 { x: 5.5, y: 3.5 },
+            rot: 0.0,
+            vel: Vec2 { x: 0.0, y: 0.0 },
+            robot: String::new(),
+            parts: Vec::new(),
+            down: Down::default(),
+            st: Vec::new(),
+            stamina: 1.0,
+        };
+        let ball = BallState { pos: Vec2 { x: 6.5, y: 4.5 }, vel: Vec2 { x: 0.0, y: 0.0 } };
+        let view = GameView { me: &robot, ball: &ball };
+        let mut ai = ChaseBallAi::default();
+        ai.decide(&view);
+        assert_eq!(ai.state_label(), Some("CHASE"));
+        for _ in 0..(STUCK_LIMIT + 5) {
+            ai.decide(&view);
+        }
+        assert_eq!(ai.state_label(), Some("ESCAPE"));
+    }
+
     /// 정상 주행(속도 충분)에서는 스턱 판정이 되지 않아야 한다(오탐 방지).
     #[test]
     fn moving_normally_never_escapes() {
@@ -513,6 +601,79 @@ mod tests {
             "이미 공을 향하면 회전하지 않아야 함(제자리 스핀 방지) (turn={})",
             out.turn
         );
+    }
+
+    /// 상태 라벨(KB-68): 가드 거리 2단화·도착 대기·탈출 기동이 각각 그대로
+    /// GUARD_HOME/GUARD_ENGAGE/HOLD/ESCAPE로 노출돼야 한다.
+    #[test]
+    fn defender_state_label_reports_guard_home_engage_hold_escape() {
+        // GUARD_HOME: 공이 상대 진영 멀리, 아직 목표 도착 전.
+        let (me, ball) = view_at(Team::Blue, Vec2 { x: -1.0, y: 0.0 }, 0.0, Vec2 { x: 5.0, y: 1.0 });
+        let mut d = DefenderAi::default();
+        d.decide(&GameView { me: &me, ball: &ball });
+        assert_eq!(d.state_label(), Some("GUARD_HOME"));
+
+        // GUARD_ENGAGE: 공이 자기 진영 멀리, 아직 목표 도착 전.
+        let (me2, ball2) = view_at(Team::Blue, Vec2 { x: -5.9, y: 1.5 }, 0.0, Vec2 { x: -1.0, y: 0.0 });
+        let mut d2 = DefenderAi::default();
+        d2.decide(&GameView { me: &me2, ball: &ball2 });
+        assert_eq!(d2.state_label(), Some("GUARD_ENGAGE"));
+
+        // HOLD: 이미 목표 도착(defender_holds_without_spinning_when_arrived와 동일 배치).
+        let (me3, ball3) = view_at(Team::Blue, Vec2 { x: -3.5, y: 0.0 }, 0.0, Vec2 { x: 5.0, y: 0.0 });
+        let mut d3 = DefenderAi::default();
+        d3.decide(&GameView { me: &me3, ball: &ball3 });
+        assert_eq!(d3.state_label(), Some("HOLD"));
+
+        // ESCAPE: 정지 지속(defender_stuck_against_wall_triggers_reverse_escape와 동일 배치).
+        let robot = RobotState {
+            id: Team::Blue,
+            pos: Vec2 { x: 5.5, y: 3.5 },
+            rot: 0.0,
+            vel: Vec2 { x: 0.0, y: 0.0 },
+            robot: String::new(),
+            parts: Vec::new(),
+            down: Down::default(),
+            st: Vec::new(),
+            stamina: 1.0,
+        };
+        let ball4 = BallState { pos: Vec2 { x: 6.5, y: 4.5 }, vel: Vec2 { x: 0.0, y: 0.0 } };
+        let view4 = GameView { me: &robot, ball: &ball4 };
+        let mut d4 = DefenderAi::default();
+        for _ in 0..(STUCK_LIMIT + 5) {
+            d4.decide(&view4);
+        }
+        assert_eq!(d4.state_label(), Some("ESCAPE"));
+    }
+
+    /// 목표 좌표 노출(KB-69): `debug_target`은 그 틱의 `guard_target`과 정확히
+    /// 일치해야 하고, 탈출 기동 중엔 목표 추적을 쉬므로 None이어야 한다.
+    #[test]
+    fn defender_debug_target_matches_guard_target_and_none_while_escaping() {
+        let (me, ball) = view_at(Team::Blue, Vec2 { x: -1.0, y: 0.0 }, 0.0, Vec2 { x: 5.0, y: 1.0 });
+        let mut d = DefenderAi::default();
+        d.decide(&GameView { me: &me, ball: &ball });
+        let expected = DefenderAi::guard_target(Team::Blue, &ball);
+        assert_eq!(d.debug_target(), Some(expected));
+
+        let robot = RobotState {
+            id: Team::Blue,
+            pos: Vec2 { x: 5.5, y: 3.5 },
+            rot: 0.0,
+            vel: Vec2 { x: 0.0, y: 0.0 },
+            robot: String::new(),
+            parts: Vec::new(),
+            down: Down::default(),
+            st: Vec::new(),
+            stamina: 1.0,
+        };
+        let ball2 = BallState { pos: Vec2 { x: 6.5, y: 4.5 }, vel: Vec2 { x: 0.0, y: 0.0 } };
+        let view2 = GameView { me: &robot, ball: &ball2 };
+        let mut d2 = DefenderAi::default();
+        for _ in 0..(STUCK_LIMIT + 5) {
+            d2.decide(&view2);
+        }
+        assert_eq!(d2.debug_target(), None, "탈출 기동 중엔 목표를 쉬어야 함");
     }
 
     /// 수비형도 정면 사거리+상대 골 정렬이면 클리어 슛(공격형과 동일 조건 공유).

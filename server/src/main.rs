@@ -167,6 +167,14 @@ async fn main() {
                         snap.ctrl[i] = "human".to_string();
                     }
                 }
+                // AI 의사결정 상태 라벨/목표 좌표(KB-68/69): 사람 슬롯은 Controller
+                // 기본 구현이 None을 주므로 별도 분기 없이 그대로 둔다.
+                for i in 0..snap.ai_state.len() {
+                    snap.ai_state[i] = slots.ctrls[i].state_label();
+                    snap.ai_target[i] = slots.ctrls[i]
+                        .debug_target()
+                        .map(|(x, y)| world::Vec2 { x, y });
+                }
                 let _ = tx.send(snap); // ~30Hz
             }
         }
